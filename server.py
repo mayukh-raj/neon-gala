@@ -1,15 +1,13 @@
 from flask import Flask, render_template, request, redirect, session, url_for
-import sqlite3
+import psycopg2
 import os
 import cloudinary
 import cloudinary.uploader
  
 app = Flask(__name__)
  
-# 🔐 SECRET KEY — use environment variable in production
-app.secret_key = os.environ.get("SECRET_KEY", "change-this-in-production")
+app.secret_key = os.environ.get("SECRET_KEY", "neongala2025secretkey")
  
-# ☁️ CLOUDINARY CONFIG — loaded from environment variables
 cloudinary.config(
     cloud_name=os.environ.get("CLOUDINARY_CLOUD_NAME", "dgxgpadmb"),
     api_key=os.environ.get("CLOUDINARY_API_KEY", "127177625253742"),
@@ -29,12 +27,15 @@ def get_filetype(filename):
     ext = filename.rsplit(".", 1)[1].lower()
     return "video" if ext in VIDEO_EXTENSIONS else "image"
  
-# DB INIT
+def get_db():
+    conn = psycopg2.connect(os.environ.get("DATABASE_URL"))
+    return conn
+ 
 def init_db():
-    conn = sqlite3.connect("database.db")
+    conn = get_db()
     c = conn.cursor()
     c.execute("""CREATE TABLE IF NOT EXISTS designs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         filename TEXT,
         category TEXT,
         filetype TEXT
@@ -44,20 +45,15 @@ def init_db():
  
 init_db()
  
-def get_db():
-    conn = sqlite3.connect("database.db")
-    conn.row_factory = sqlite3.Row
-    return conn
- 
-# HOME
 @app.route("/")
 def home():
     conn = get_db()
-    data = conn.execute("SELECT * FROM designs ORDER BY id DESC").fetchall()
+    c = conn.cursor()
+    c.execute("SELECT * FROM designs ORDER BY id DESC")
+    data = c.fetchall()
     conn.close()
     return render_template("index.html", designs=data)
  
-# ADMIN LOGIN
 @app.route("/admin", methods=["GET", "POST"])
 def admin():
     error = None
@@ -70,54 +66,53 @@ def admin():
             error = "Invalid username or password."
     return render_template("admin_login.html", error=error)
  
-# LOGOUT
 @app.route("/logout")
 def logout():
     session.pop("admin", None)
     return redirect(url_for("admin"))
  
-# DASHBOARD
 @app.route("/dashboard")
 def dashboard():
     if not session.get("admin"):
         return redirect(url_for("admin"))
     conn = get_db()
-    data = conn.execute("SELECT * FROM designs ORDER BY id DESC").fetchall()
-    total = conn.execute("SELECT COUNT(*) FROM designs").fetchone()[0]
+    c = conn.cursor()
+    c.execute("SELECT * FROM designs ORDER BY id DESC")
+    data = c.fetchall()
+    c.execute("SELECT COUNT(*) FROM designs")
+    total = c.fetchone()[0]
     conn.close()
     return render_template("admin_dashboard.html", designs=data, total=total)
  
-# UPLOAD
 @app.route("/upload", methods=["POST"])
 def upload():
     if not session.get("admin"):
         return redirect(url_for("admin"))
-    
     files = request.files.getlist("file")
     category = request.form["category"]
-    
     conn = get_db()
+    c = conn.cursor()
     for file in files:
         if file and allowed_file(file.filename):
             filetype = get_filetype(file.filename)
             resource_type = "video" if filetype == "video" else "image"
             result = cloudinary.uploader.upload(file, resource_type=resource_type, format="mp4" if filetype == "video" else None)
             url = result["secure_url"]
-            conn.execute(
-                "INSERT INTO designs (filename, category, filetype) VALUES (?, ?, ?)",
+            c.execute(
+                "INSERT INTO designs (filename, category, filetype) VALUES (%s, %s, %s)",
                 (url, category, filetype)
             )
     conn.commit()
     conn.close()
     return redirect(url_for("dashboard"))
  
-# DELETE — POST only to prevent accidental deletion via URL
 @app.route("/delete/<int:id>", methods=["POST"])
 def delete(id):
     if not session.get("admin"):
         return redirect(url_for("admin"))
     conn = get_db()
-    conn.execute("DELETE FROM designs WHERE id=?", (id,))
+    c = conn.cursor()
+    c.execute("DELETE FROM designs WHERE id=%s", (id,))
     conn.commit()
     conn.close()
     return redirect(url_for("dashboard"))
